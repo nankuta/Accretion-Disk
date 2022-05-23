@@ -9,9 +9,9 @@ dt = t_final/n_steps;
 
 %parameters to determine shape of orbit, velocities
 M1 = 20;
-M2 = 5;
+M2 = 10;
 a = 15;
-b = 15;
+b = 20;
 va = sqrt((b/a)*(2*G*(M1+M2))/(a+b));
 vb = sqrt((a/b)*(2*G*(M1+M2))/(a+b));
 
@@ -29,7 +29,7 @@ M1_vel = (-M2/(M1+M2))*[0, va, 0];
 [X1, Y1, Z1] = create_body(npoints, M1_radius);
 
 %create second body, with intialized position and velocity
-M2_radius = 5;
+M2_radius = 10;
 M2_density = M2/((4/3)*(M2_radius^3));
 M2_pos = (M1/(M1+M2))*[a, 0, 0];
 M2_vel = (M1/(M1+M2))*[0, va, 0];
@@ -74,26 +74,30 @@ for count = 1:t_final
     
     phi = zeros(n_field, n_field);
     
+    omega = sqrt(G*(M1+M2)/((norm(M2_pos-M1_pos))^3));
+    
     %display potential at value in the field
     for r = 1:n_field
         for c = 1:n_field
-            phi(r,c) = potential(G, X_field(r), Y_field(c), M1, M2, M1_pos, M2_pos);
+            phi(r,c) = potential(G, X_field(r), Y_field(c), M1, M2, M1_pos, M2_pos, omega);
         end
     end
     
-    L1 = lagrange(G, n_field, M1, M2, M1_pos, M2_pos);
+    L1 = lagrange(G, n_field, M1, M2, M1_pos, M2_pos, omega);
     
-    dm = integrate_phi(G, M1, M2, M1_pos, M2_pos, M2_radius, L1);
-    n_particles = ceil(dm*100);
+    dm = get_mdot(G, M1, M2, M1_pos, M2_pos, M2_radius, L1, omega);
+    n_particles = ceil(dm*300);
     
     %intialize pos and vel for discharged particles
+    v_particle = -5*(sqrt(M1/M2)/sqrt(norm(M2_pos-M1_pos)/M2_radius))*((M2_pos-M1_pos)/norm(M2_pos-M1_pos));
+    
     for n = 1:n_particles
         particles_x(end+1) = M2_pos(1)+randn*M2_radius/10;
         particles_y(end+1) = M2_pos(2)+randn*M2_radius/10;
         particles_z(end+1) = randn*M2_radius/10;
-        particles_u(end+1) = M2_vel(1)/10;
-        particles_v(end+1) = M2_vel(2)/10;
-        particles_w(end+1) = 0;
+        particles_u(end+1) = v_particle(1);
+        particles_v(end+1) = v_particle(2);
+        particles_w(end+1) = v_particle(3);
     end
     
     %calculate pos and vel for particles in accretion disk
@@ -139,6 +143,7 @@ for count = 1:t_final
     ylim([-30, 30])
     zlim([-50, 10])
     
+    pause(.1);
     drawnow
     end
 end
@@ -159,18 +164,17 @@ function [Xcoords, Ycoords, Zcoords] = create_body(npoints, radius)
     end
 end
 
-%calculate gravitational and angular momentum potential
-function phi = potential(G, X, Y, M1, M2, M1_pos, M2_pos)
+%calculate gravitational and centrifugal potential
+function phi = potential(G, X, Y, M1, M2, M1_pos, M2_pos, omega)
 
     CM = (M1*M1_pos + M2*M2_pos)/(M1+M2);
-    omega = sqrt(G*(M1+M2)/((norm(M2_pos-M1_pos))^3));
     
     phi = -G*M1/(sqrt((X-M1_pos(2))^2+(Y-M1_pos(1))^2)) - G*M2/(sqrt((X-M2_pos(2))^2+(Y-M2_pos(1))^2));
     phi = phi - .5*(norm(cross([0, 0, omega], [X, Y, 0]-CM)))^2;
 end
 
 %find lagrange point (saddle point of the potential)
-function L1 = lagrange(G, n_field, M1, M2, M1_pos, M2_pos)
+function L1 = lagrange(G, n_field, M1, M2, M1_pos, M2_pos, omega)
     
     r = M2_pos - M1_pos;
     dr = 1/n_field;
@@ -178,7 +182,7 @@ function L1 = lagrange(G, n_field, M1, M2, M1_pos, M2_pos)
     phis = ones(n_field-2, 1);
     
      for i = 1:(n_field-2)
-         phis(i) = potential(G, M1_pos(1)+i*dr*r(1), M1_pos(2)+i*dr*r(2), M1, M2, M1_pos, M2_pos);
+         phis(i) = potential(G, M1_pos(1)+i*dr*r(1), M1_pos(2)+i*dr*r(2), M1, M2, M1_pos, M2_pos, omega);
      end
         
     saddle = max(phis);
@@ -186,25 +190,15 @@ function L1 = lagrange(G, n_field, M1, M2, M1_pos, M2_pos)
     L1 = M1_pos + ival*dr*r;
 end
 
-%volume integral of potential over region bounded by roche lobe of M1 
-%and volume of M2
-%this is roughly proportional to rate of mass loss
-function dm = integrate_phi(G, M1, M2, M1_pos, M2_pos, M2_radius, L1)
-    const = -.00005;
+%calculate rate of mass loss
+function dm = get_mdot(G, M1, M2, M1_pos, M2_pos, M2_radius, L1, omega)
+    const = .5;
     dm = 0;
     if (norm(L1-M1_pos) < norm(M2_pos-M1_pos)-M2_radius)
         return;
     end
     
+    delta_r = norm(M2_pos-L1);
     
-    unitv = (M2_pos-M1_pos)/(norm(M2_pos-M1_pos));
-    r = norm(M2_pos-L1);
-    dr = r/10;
-    
-    for i = 1:10
-        point = M2_pos-unitv*M2_radius+i*unitv*dr;
-        dm = dm + dr*pi*((M2_radius^2)-(dr*i)^2)*potential(G, point(1), point(2), M1, M2, M1_pos, M2_pos);
-    end
-    
-    dm = dm*const;
+    dm = const*M2*(delta_r/M2_radius)^3;
 end
